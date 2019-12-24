@@ -1,11 +1,13 @@
 <template lang="pug">
-  div
-    //- span(v-html="iframe")
-    span secret code: {{ secretCode }}
-    ul
-      li(v-for="link in links")
-        a(:href="link" target="_blank") {{ link }}
-    pre {{ $data }}
+  .root
+    h1 {{ url }}
+    video(ref="refVideo" width="100%" controls)
+    .controls(v-show="optionsCurrentEpisode.resolutions[0].label !== null")
+      button.btn(v-for="resolution in optionsCurrentEpisode.resolutions") {{ resolution.label }}
+    div(v-for="temp in links")
+      h3 {{ temp.season }}
+      ul
+        li.btn(v-for="episode in temp.episodes" @click="getVideoInformation(episode)") {{ episode.split("/").reverse()[0] }}
 </template>
 
 <script>
@@ -15,18 +17,32 @@ import axios from "axios";
 export default {
   data() {
     return {
-      baseurl: "https://www.rexpelis.com/serie/12-monos",
+      baseurl: "https://www.rexpelis.com/",
+      tipo: "serie/",
+      url: "12-monos",
+
       baseurlEpisodes: "https://www.rexpelis.com/player/embed/episode/",
       html: null,
-      episodesCodes: [],
 
-      secretCode: null,
+      currentEpisode: {},
 
-      iframe: null,
+      optionsCurrentEpisode: {
+        resolutions: [
+          {
+            label: null,
+            src: null
+          }
+        ]
+      },
 
-      page: null,
+      links: [
+        {
+          season: null,
+          episodes: []
+        }
+      ],
+
       response: null,
-      links: [],
       error: null
     };
   },
@@ -37,35 +53,71 @@ export default {
 
   watch: {
     response() {
-      this.scrapy(this.html);
+      this.scrapy_serie(this.html);
     },
 
-    episodesCodes() {
-      const embedUrl = `${this.baseurlEpisodes}${this.episodesCodes[0].playerId}`;
-      console.log(embedUrl);
+    currentEpisode(pValue) {
+      const embedUrl = `${this.baseurlEpisodes}${pValue.playerId}`;
+
+      // TODO: Reorganizar código para no tener múltiples llamadas de esta manera
 
       axios
         .get(embedUrl)
         .then(res => {
-          this.iframe = res.data;
+          const iframe = res.data;
 
-          const $ = cheerio.load(this.iframe);
+          const $ = cheerio.load(iframe);
 
-          const source = $(this.iframe).attr("src");
+          const source = $(iframe).attr("src");
           const arrSecretCode = source.split("/");
-          console.log(arrSecretCode);
-          // this.secretCode = arrSecretCode[arrSecretCode.length];
 
-          // console.log(this.secretCode);
+          const urlApiSource = `https://${arrSecretCode[2]}/api/source/${arrSecretCode[4]}`;
+
+          axios.post(urlApiSource).then(res => {
+            this.optionsCurrentEpisode.resolutions = [];
+
+            //
+            // Standard Definition
+            this.optionsCurrentEpisode.resolutions.push({
+              label: "480 SD",
+              src: res.data.data[0].file
+            });
+
+            //
+            // Hight Definition
+            if (res.data.data[1]) {
+              this.optionsCurrentEpisode.resolutions.push({
+                label: "720 HD",
+                src: res.data.data[1].file
+              });
+            }
+
+            // 1080 HD
+            if (res.data.data[2]) {
+              this.optionsCurrentEpisode.resolutions.push({
+                label: "1080 HD",
+                src: res.data.data[2].file
+              });
+            }
+
+            //
+            // Default loads SD
+            this.$refs.refVideo.src = this.optionsCurrentEpisode.resolutions[0].src;
+            this.$refs.refVideo.play();
+          });
         })
         .catch(err => (this.error = err));
     }
   },
 
   methods: {
+    /**
+     * Hace una petición vía axios
+     * para obtener la lista de títulos
+     */
     getWebSite() {
       axios
-        .get(this.baseurl, {
+        .get(`${this.baseurl}${this.tipo}${this.url}`, {
           method: "get",
           redirect: "follow"
         })
@@ -76,50 +128,103 @@ export default {
         .catch(err => (this.error = err));
     },
 
-    scrapy(pHtml) {
+    /**
+     * Hace un rastreo de la página solicitada
+     * y obtiene los enlaces de los capítulos de alguna serie.
+     *
+     * @param pHtml HTML que analizará los capítulos de la serie.
+     */
+    scrapy_serie(pHtml) {
       let $ = cheerio.load(pHtml);
-
-      // const itemSeasons = $(".pelicula-player .item-season");
 
       const episodes = $(".item-season-episodes");
 
       //
-      // Primera temporada
-      const links = $(episodes[2]).find("a");
-      const links_length = $(links).length;
+      // Encuentra los enlaces del array de las temporadas
+      let links = [];
+      this.links = [];
 
-      for (let i = 0; i < links_length; i++) {
-        const link = $(links[i]).attr("href");
-        this.links.push(link);
+      const episodes_length = $(episodes).length;
+      for (let i = 0; i < episodes_length; i++) {
+        const link = $(episodes[i]).find("a");
+        links.push(link);
       }
 
-      //
-      // Load other page
+      for (let i = links.length - 1; i > 0; i--) {
+        const URL = $(links[i]).attr("href");
+        const TITLE = URL.split("/").reverse()[1];
+
+        let episodes = [];
+
+        for (let j = 0; j < links[i].length; j++) {
+          const link = $(links[i][j]).attr("href");
+          episodes.push(link);
+        }
+
+        this.links.push({
+          season: TITLE,
+          episodes
+        });
+      }
+    },
+
+    getVideoInformation(pLink) {
       axios
-        .get(this.links[1], {
+        .get(pLink, {
           method: "get",
           redirect: "follow"
         })
         .then(res => {
-          console.log("Cargando página...");
-          $ = cheerio.load(res.data);
+          let $ = cheerio.load(res.data);
           const video_tabs = $("#player .tabs-video ul");
           //
           // Primer enlace
           const data = $(video_tabs[0])
             .find("li")
             .data();
-          this.episodesCodes.push(data);
+
+          //
+          // Emit for current episode
+          this.currentEpisode = data;
         })
         .catch(err => (this.error = err));
-
-      // console.log($(video_tabs.find("li").data()));
-
-      // axios
-      //   .get(33620")
-      //   .then(res => (this.episode = res))
-      //   .catch(err => (this.error = err));
     }
   }
 };
 </script>
+
+<style lang="scss" scoped>
+.root {
+  width: 100%;
+  max-width: 700px;
+  margin: auto;
+}
+ul {
+  margin: 30px 0px;
+  padding: 0;
+}
+
+li {
+  list-style: none;
+}
+
+.btn {
+  min-width: 100px;
+  border: 1px solid;
+  padding: 10px;
+  margin: 15px 5px;
+  text-align: center;
+  background-color: #15161d;
+  border-radius: 3px;
+  color: rgba(5, 255, 255, 0.863);
+
+  &:hover {
+    cursor: pointer;
+  }
+}
+
+.btn-active {
+  background-color: rgb(0, 224, 176);
+  color: black;
+}
+</style>
