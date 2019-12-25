@@ -1,13 +1,29 @@
 <template lang="pug">
   .root
-    h1 {{ url }}
-    video(ref="refVideo" width="100%" controls)
-    .controls(v-show="optionsCurrentEpisode.resolutions[0].label !== null")
-      button.btn(v-for="resolution in optionsCurrentEpisode.resolutions") {{ resolution.label }}
-    div(v-for="temp in links")
-      h3 {{ temp.season }}
-      ul
-        li.btn(v-for="episode in temp.episodes" @click="getVideoInformation(episode)") {{ episode.split("/").reverse()[0] }}
+    h1 {{ getFormattedName( url ) }}
+
+    //- pre {{ $data }}
+
+    .video__wrapper
+      header
+        h3 {{ selectedEpisode.season }} {{ selectedEpisode.name }}
+      video(v-show="currentEpisode" ref="refVideo" width="100%" controls)
+      .controls(v-show="showOptions")
+        button.btn(v-for="resolution in selectedEpisode.options.resolutions"
+                  :class="[ resolution.label == selectedEpisode.resolution ? 'btn-active' : '' ]"
+                  @click="changeResolutionType(resolution.label)"
+                  ) {{ resolution.label }}
+
+    aside.episodes__wrapper
+      //- TODO: Este menú va arriba dentro del menú de navegación
+      .episodes__menu
+        header
+          h2 Menú
+      .episodes(v-for="temp in arr_links")
+        h3.episodes__title {{ getFormattedName(temp.season) }}
+        ul.episodes__items
+          li.btn(v-for="episode in temp.episodes"
+                @click="getVideoInformation(episode)") {{ getChaptername(episode) }}
 </template>
 
 <script>
@@ -15,27 +31,42 @@ import cheerio from "cheerio";
 import axios from "axios";
 
 export default {
+  props: {
+    ppUrl: {
+      type: String,
+      required: true,
+      default: "12-monos"
+    }
+  },
+
   data() {
     return {
       baseurl: "https://www.rexpelis.com/",
       tipo: "serie/",
-      url: "12-monos",
+      url: this.ppUrl,
 
       baseurlEpisodes: "https://www.rexpelis.com/player/embed/episode/",
       html: null,
 
-      currentEpisode: {},
+      currentEpisode: null,
 
-      optionsCurrentEpisode: {
-        resolutions: [
-          {
-            label: null,
-            src: null
-          }
-        ]
+      //
+      // Selected Episode and its options
+      selectedEpisode: {
+        season: "",
+        name: "",
+        resolution: "",
+        options: {
+          resolutions: [
+            {
+              label: null,
+              src: null
+            }
+          ]
+        }
       },
 
-      links: [
+      arr_links: [
         {
           season: null,
           episodes: []
@@ -43,8 +74,37 @@ export default {
       ],
 
       response: null,
+
       error: null
     };
+  },
+
+  computed: {
+    showOptions: function() {
+      return this.selectedEpisode.options.resolutions[0].label !== null;
+    },
+
+    getFormattedName: function() {
+      return pValue => {
+        if (pValue == null) return;
+
+        return (
+          pValue
+            .split("-")
+            .join(" ")
+            // Capitalize
+            .replace(/^\w/, c => c.toUpperCase())
+        );
+      };
+    },
+
+    getChaptername: function() {
+      return pValue => {
+        if (pValue == null) return;
+
+        return this.getFormattedName(pValue.split("/").reverse()[0]);
+      };
+    }
   },
 
   mounted() {
@@ -57,28 +117,28 @@ export default {
     },
 
     currentEpisode(pValue) {
-      const embedUrl = `${this.baseurlEpisodes}${pValue.playerId}`;
+      const EMBED_URL = `${this.baseurlEpisodes}${pValue.playerId}`;
 
       // TODO: Reorganizar código para no tener múltiples llamadas de esta manera
 
       axios
-        .get(embedUrl)
+        .get(EMBED_URL)
         .then(res => {
-          const iframe = res.data;
+          const IFRAME = res.data;
 
-          const $ = cheerio.load(iframe);
+          const $ = cheerio.load(IFRAME);
 
-          const source = $(iframe).attr("src");
-          const arrSecretCode = source.split("/");
+          const ARR_SOURCE = $(IFRAME).attr("src");
+          const ARR_SECRET_CODE = ARR_SOURCE.split("/");
 
-          const urlApiSource = `https://${arrSecretCode[2]}/api/source/${arrSecretCode[4]}`;
+          const URL = `https://${ARR_SECRET_CODE[2]}/api/source/${ARR_SECRET_CODE[4]}`;
 
-          axios.post(urlApiSource).then(res => {
-            this.optionsCurrentEpisode.resolutions = [];
+          axios.post(URL).then(res => {
+            this.selectedEpisode.options.resolutions = [];
 
             //
             // Standard Definition
-            this.optionsCurrentEpisode.resolutions.push({
+            this.selectedEpisode.options.resolutions.push({
               label: "480 SD",
               src: res.data.data[0].file
             });
@@ -86,7 +146,7 @@ export default {
             //
             // Hight Definition
             if (res.data.data[1]) {
-              this.optionsCurrentEpisode.resolutions.push({
+              this.selectedEpisode.options.resolutions.push({
                 label: "720 HD",
                 src: res.data.data[1].file
               });
@@ -94,7 +154,7 @@ export default {
 
             // 1080 HD
             if (res.data.data[2]) {
-              this.optionsCurrentEpisode.resolutions.push({
+              this.selectedEpisode.options.resolutions.push({
                 label: "1080 HD",
                 src: res.data.data[2].file
               });
@@ -102,7 +162,8 @@ export default {
 
             //
             // Default loads SD
-            this.$refs.refVideo.src = this.optionsCurrentEpisode.resolutions[0].src;
+            this.selectedEpisode.resolution = this.selectedEpisode.options.resolutions[0].label;
+            this.$refs.refVideo.src = this.selectedEpisode.options.resolutions[0].src;
             this.$refs.refVideo.play();
           });
         })
@@ -135,59 +196,75 @@ export default {
      * @param pHtml HTML que analizará los capítulos de la serie.
      */
     scrapy_serie(pHtml) {
+      //
+      // Clear the data
+      this.arr_links = [];
+
       let $ = cheerio.load(pHtml);
 
-      const episodes = $(".item-season-episodes");
+      const HTML_NODE_EPISODES = $(".item-season-episodes");
 
       //
-      // Encuentra los enlaces del array de las temporadas
-      let links = [];
-      this.links = [];
+      // Encuentra los enlaces del array de las temporadas let arr_links = [];
+      let accum_links = [];
 
-      const episodes_length = $(episodes).length;
-      for (let i = 0; i < episodes_length; i++) {
-        const link = $(episodes[i]).find("a");
-        links.push(link);
+      for (let i = 0; i < $(HTML_NODE_EPISODES).length; i++) {
+        const LINK = $(HTML_NODE_EPISODES[i]).find("a");
+        accum_links.push(LINK);
       }
 
-      for (let i = links.length - 1; i > 0; i--) {
-        const URL = $(links[i]).attr("href");
+      for (let i = accum_links.length - 1; i >= 0; i--) {
+        const URL = $(accum_links[i]).attr("href");
         const TITLE = URL.split("/").reverse()[1];
 
-        let episodes = [];
+        let accum_episodes = [];
 
-        for (let j = 0; j < links[i].length; j++) {
-          const link = $(links[i][j]).attr("href");
-          episodes.push(link);
+        for (let j = 0; j < accum_links[i].length; j++) {
+          const EPISODE = $(accum_links[i][j]).attr("href");
+          accum_episodes.push(EPISODE);
         }
 
-        this.links.push({
+        //
+        // Push the elements into the array arr_links data object
+        this.arr_links.push({
           season: TITLE,
-          episodes
+          episodes: accum_episodes
         });
       }
     },
 
     getVideoInformation(pLink) {
       axios
-        .get(pLink, {
-          method: "get",
-          redirect: "follow"
-        })
+        .get(pLink)
         .then(res => {
           let $ = cheerio.load(res.data);
-          const video_tabs = $("#player .tabs-video ul");
+          const ARR_VIDEO_TABS = $("#player .tabs-video ul");
           //
           // Primer enlace
-          const data = $(video_tabs[0])
+          const DATA_VIDEO = $(ARR_VIDEO_TABS[0])
             .find("li")
             .data();
 
+          this.selectedEpisode.name = this.getChaptername(pLink);
+          this.selectedEpisode.season = this.getFormattedName(
+            pLink.split("/").reverse()[1]
+          );
+
           //
           // Emit for current episode
-          this.currentEpisode = data;
+          this.currentEpisode = DATA_VIDEO;
         })
         .catch(err => (this.error = err));
+    },
+
+    changeResolutionType(pType) {
+      const ITEM = this.selectedEpisode.options.resolutions.find(
+        item => item.label == pType
+      );
+
+      this.selectedEpisode.resolution = ITEM.label;
+      this.$refs.refVideo.src = ITEM.src;
+      this.$refs.refVideo.play();
     }
   }
 };
@@ -199,6 +276,13 @@ export default {
   max-width: 700px;
   margin: auto;
 }
+
+.video__wrapper {
+  video {
+    box-shadow: 7px 7px 20px rgb(22, 22, 22);
+  }
+}
+
 ul {
   margin: 30px 0px;
   padding: 0;
@@ -208,23 +292,66 @@ li {
   list-style: none;
 }
 
+$btn-background-color: #15161d;
+
 .btn {
   min-width: 100px;
   border: 1px solid;
   padding: 10px;
   margin: 15px 5px;
   text-align: center;
-  background-color: #15161d;
+  background-color: $btn-background-color;
   border-radius: 3px;
   color: rgba(5, 255, 255, 0.863);
+  transition: all 0.5s;
 
   &:hover {
     cursor: pointer;
+    background-color: rgb(66, 36, 66);
+    color: white;
+    border-color: rgba(5, 255, 255, 0.863);
   }
 }
 
 .btn-active {
   background-color: rgb(0, 224, 176);
   color: black;
+  &:hover {
+    background-color: rgb(0, 224, 176);
+    color: black;
+  }
+}
+
+.episodes__wrapper {
+  width: 100%;
+  max-width: 250px;
+  min-height: 100vh;
+  max-height: 100vh;
+  overflow: auto;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1;
+}
+
+.episodes {
+  background-color: #17151d;
+
+  &__title {
+    background-color: rgb(22, 22, 22);
+    margin: 0;
+    padding: 10px;
+    display: flex;
+    align-items: center;
+  }
+
+  &__items {
+    display: block;
+    margin: 0;
+    .btn {
+      margin: 0px;
+      border: none;
+    }
+  }
 }
 </style>
